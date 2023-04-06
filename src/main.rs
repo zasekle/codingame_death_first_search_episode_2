@@ -1,7 +1,7 @@
-use std::collections::HashSet;
-use std::collections::HashMap;
-use std::process::id;
 use core::cmp::Ordering;
+use std::collections::HashMap;
+use std::collections::HashSet;
+use std::process::id;
 
 #[derive(Debug, Eq, PartialEq, PartialOrd, Ord, Clone)]
 struct Link {
@@ -10,13 +10,33 @@ struct Link {
     severed: bool,
 }
 
+#[derive(Debug, Eq, Clone, Hash)]
+struct Path {
+    number_moves_leeway: i32,
+    path: Vec<usize>,
+}
+
 #[derive(Debug, Eq, PartialEq, Ord, Clone)]
 struct Node {
     links: Vec<usize>,
     gateway: bool,
     distance: i32,
-    num_gateway_nodes_on_way: i32,
     num_gateways_surrounding: usize,
+    num_moves_leeway: i32,
+}
+
+impl PartialEq for Path {
+    fn eq(&self, other: &Self) -> bool {
+        if self.path.len() == other.path.len() {
+            for i in 0..self.path.len() {
+                if self.path[i] != other.path[i] {
+                    return false;
+                }
+            }
+            return true;
+        }
+        false
+    }
 }
 
 impl Node {
@@ -34,8 +54,8 @@ fn setup_links_gateway(links: Vec<usize>, gateway: bool) -> Node {
         links,
         gateway,
         distance: -1,
-        num_gateway_nodes_on_way: 0,
         num_gateways_surrounding: 0,
+        num_moves_leeway: i32::MAX,
     }
 }
 
@@ -76,7 +96,19 @@ fn main() {
         Node::only_links(vec![1, 5, 11]),
     ];
 
+    //TODO:
+    // 1) Go through it and try the Feynman learning technique where I  explain how it works 'to a child'
+    // as a method to try to reinforce and cement better what exactly I did.
+    // 2) Make any optimizations to it that I can to try and get a clean algorithm.
+    // 3) Go look up what exactly people recommend for this to solve it.
+
     let enemy_node = 0;
+
+    for node in nodes.iter_mut() {
+        node.distance = -1;
+        node.num_gateways_surrounding = 0;
+        node.num_moves_leeway = i32::MAX;
+    }
 
     for i in 0..nodes.len() {
         if nodes[i].gateway {
@@ -89,54 +121,31 @@ fn main() {
         );
     }
 
-    //TODO: problems
-    // 1) The same node can be counted multiple times, is this ok?
-    //   *
-    //  / \
-    // o   o
-    //  \ /
-    //   *
-    // 2) im not sure my leeway equation is broad enough for longer paths?
-
-    //TODO: its about how many nodes are directly surrounding this one
-    // the path length is the sum of these numbers so above would be a path of {0,1} and {0,1} so both paths are 'length' 1
-    // then need to look at the 'longest' path first
-
-    //TODO: probably run this one second, it now needs to store all paths, and it can save some processing
-    // by having a running sum of the final number
-    //TODO: it doesn't recognize when it has a 'gap' and when to use that gap, if a path constantly take moves for example, it doesn't know
-    //A Path can be the sum of the 'num_gateways_surrounding' and a vector of node indexes.
-    // Then I take the largest number relative to the path length.
-    // assume 2 paths
-    // *
-    // |
-    // 0--*  2 to lose; 2 to save
-    // |
-    // s
-    // |
-    // 0--*  2 to lose; 1 to save
-    // |
-    // 0--*  3 to lose; 1 to save
-    // |
-    // 0--*  4 to lose; 1 to save
-    // a ratio of 1 (or lose - win == 0 to avoid division) means immediate attention required
-    find_all_distances_to_node(
+    let best_node_to_choose = find_all_distances_to_node(
         &mut nodes,
         &mut links,
         enemy_node,
     );
 
-    let mut output_str = String::new();
+    for link_idx in nodes[best_node_to_choose].links.iter() {
+        let mut link = &mut links[*link_idx];
+        let other_node_index =
+            if link.first_index == best_node_to_choose {
+                link.second_index
+            } else {
+                link.first_index
+            };
 
-    for (i, n) in nodes.iter().enumerate() {
-        if i != 0 {
-            output_str.push(' ');
+        if nodes[other_node_index].gateway
+            && link.severed == false {
+            link.severed = true;
+            println!("{} {}", link.first_index, link.second_index);
+            break;
         }
-        output_str.push_str(format!("<{i} gateway: {} distance: {} num_gateways_surrounding {}>", n.gateway, n.distance, n.num_gateways_surrounding).as_str());
     }
-    // Example: 3 4 are the indices of the nodes you wish to sever the link between
-    println!("{:?}", output_str);
-    // println!("{node_index} {gateway_index}")
+
+    println!("nodes: {:?}", nodes);
+    println!("best_node_to_choose: {best_node_to_choose}");
 }
 
 fn find_number_surrounding_gateway_nodes(
@@ -162,23 +171,100 @@ fn find_number_surrounding_gateway_nodes(
     }
 }
 
+#[derive(Debug, Hash, PartialEq, Eq)]
+struct TempNodeVals {
+    idx: usize,
+    leeway: i32,
+}
+
 fn find_all_distances_to_node(
     nodes: &mut Vec<Node>,
     links: &Vec<Link>,
     enemy_node_index: usize,
-) {
+) -> usize {
+    let mut current_idx = HashMap::<usize, i32>::from([
+        (enemy_node_index, 1)
+    ]);
+    let mut distance = 0;
+    let mut smallest_num_moves_leeway = i32::MAX;
+    let mut node_with_smallest_num_moves_leeway = 0;
+    'outer: while !current_idx.is_empty() {
+        let next_idx = current_idx;
+        current_idx = HashMap::new();
 
-    //TODO: save path I suppose
-    // need to make sure I handle multiple paths of same distance
-    // need to look into 1 past the failing node on test cast #6
-    // TODO: make sure no excess in paths
+        for (idx, leeway) in next_idx {
+            let current_distance = nodes[idx].distance;
+            if current_distance == -1
+                || (current_distance == distance && nodes[idx].num_moves_leeway != i32::MAX) {
+                nodes[idx].distance = distance;
 
-    for node in nodes.iter_mut() {
-        node.distance = -1;
-        node.num_gateway_nodes_on_way = 0;
+                // o   o
+                // |   |
+                // o   o - *
+                //  \ /
+                //   o
+                if nodes[idx].gateway == true {
+                    continue;
+                }
+
+                let num_gateways_surrounding = nodes[idx].num_gateways_surrounding as i32;
+                let current_leeway = leeway - num_gateways_surrounding;
+                nodes[idx].num_moves_leeway =
+                    if num_gateways_surrounding == 0 {
+                        i32::MAX
+                    } else {
+                        if current_leeway == 0 {
+                            smallest_num_moves_leeway = 0;
+                            node_with_smallest_num_moves_leeway = idx;
+                            break 'outer;
+                        } else if current_leeway < smallest_num_moves_leeway {
+                            smallest_num_moves_leeway = current_leeway;
+                            node_with_smallest_num_moves_leeway = idx;
+                        }
+                        current_leeway
+                    };
+
+                let node_links = nodes[idx].links.clone();
+                for link_index in node_links.iter() {
+                    let link = &links[*link_index];
+                    if !link.severed {
+                        let other_node_idx =
+                            if link.first_index == idx {
+                                link.second_index
+                            } else {
+                                link.first_index
+                            };
+
+                        let next_leeway = current_leeway + 1;
+                        if current_idx.contains_key(&other_node_idx) {
+                            let current_leeway = current_idx.get_mut(&other_node_idx).expect("get_mut failed");
+                            if next_leeway < *current_leeway {
+                                *current_leeway = next_leeway;
+                            }
+                        } else {
+                            current_idx.insert(
+                                other_node_idx,
+                                next_leeway,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        distance += 1;
     }
 
-    let mut final_paths =  HashMap::<usize, Vec<Vec<usize>>>::new();
+    node_with_smallest_num_moves_leeway
+}
+
+/*fn find_all_distances_to_node(
+    nodes: &mut Vec<Node>,
+    links: &Vec<Link>,
+    enemy_node_index: usize,
+) -> Vec<Path> {
+
+    let mut final_paths = HashMap::<usize, Vec<Vec<usize>>>::new();
     let mut current_idx = HashMap::<usize, Vec<Vec<usize>>>::from([(enemy_node_index, Vec::from([Vec::from([enemy_node_index])]))]);
     let mut distance = 0;
     while !current_idx.is_empty() {
@@ -186,7 +272,6 @@ fn find_all_distances_to_node(
         current_idx = HashMap::new();
 
         for (idx, paths) in next_idx {
-
             if nodes[idx].gateway == true {
                 if final_paths.contains_key(&idx) {
                     let prev_paths = final_paths
@@ -196,28 +281,27 @@ fn find_all_distances_to_node(
                     for path in &paths {
                         prev_paths.push(path.clone());
                     }
-
                 } else {
                     final_paths.insert(idx, paths.clone());
                 }
             }
             let current_distance = nodes[idx].distance;
-            if current_distance == -1  || current_distance == distance {
+            if current_distance == -1 || current_distance == distance {
                 nodes[idx].distance = distance;
 
                 if nodes[idx].gateway == true {
                     continue;
                 }
 
-                let node_links= nodes[idx].links.clone();
+                let node_links = nodes[idx].links.clone();
                 for link_index in node_links.iter() {
                     let link = &links[*link_index];
                     if !link.severed {
                         let other_node_idx =
                             if link.first_index == idx {
-                               link.second_index
+                                link.second_index
                             } else {
-                               link.first_index
+                                link.first_index
                             };
 
                         let mut paths_clone = paths.clone();
@@ -231,9 +315,8 @@ fn find_all_distances_to_node(
                                 .expect("fail to get from map");
 
                             for path in paths_clone {
-                               prev_paths.push(path);
+                                prev_paths.push(path);
                             }
-
                         } else {
                             current_idx.insert(other_node_idx, paths_clone);
                         }
@@ -245,9 +328,31 @@ fn find_all_distances_to_node(
         distance += 1;
     }
 
+    let mut paths = HashSet::<Path>::new();
 
-    println!("final_paths: {:?}", final_paths);
-}
+    for (_, value) in final_paths {
+        for mut path in value {
+            path.pop();
+            let mut new_path = Path {
+                number_moves_leeway: 0,
+                path,
+            };
+            if !paths.contains(&new_path) {
+                let mut number_moves_to_save_path: i32 = 0;
+                for node_idx in new_path.path.iter() {
+                    number_moves_to_save_path += nodes[*node_idx].num_gateways_surrounding as i32;
+                }
+                let total_number_moves_to_lose = new_path.path.len() as i32;
+
+                new_path.number_moves_leeway = total_number_moves_to_lose - number_moves_to_save_path;
+
+                paths.insert(new_path);
+            }
+        }
+    }
+
+    paths.into_iter().collect()
+}*/
 
 /*fn find_distance_to_nearest_gateway_node(
     nodes: &mut Vec::<Node>,
